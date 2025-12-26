@@ -2,16 +2,22 @@
 
 # Predictor set to be used throughout (single source of truth)
 MODEL_PREDICTORS <- c(
-  "year",
+  "dem",
+  "slope",
   "temp_mean",
-  "rain_var",
   "rain_dry",
-  "dom_T_OC",
-  "peatswamp",
+  "rain_var",
+  "human_pop_dens",
   "lowland_forest",
   "lower_montane_forest",
+  "road_dens",
+  "distance_PA",
+  "fire_dens",
   "deforestation_hansen",
-  "human_pop_dens"
+  "deforestation_gaveau",
+  "plantation_distance",
+  "pulp_distance",
+  "palm_distance"
 )
 
 # Derived terms (still based only on predictors above)
@@ -31,10 +37,26 @@ apply_predictor_transforms <- function(predictors_df) {
     stop("predictors_df must contain columns: predictor, value")
   }
 
-  # Only transform predictors we actually use.
   if ("human_pop_dens" %in% unique(predictors_df$predictor)) {
     predictors_df[predictors_df$predictor == "human_pop_dens", "value"] <-
       log(predictors_df[predictors_df$predictor == "human_pop_dens", "value"] + 1)
+  }
+
+  if ("distance_PA" %in% unique(predictors_df$predictor)) {
+    predictors_df[predictors_df$predictor == "distance_PA", "value"] <-
+      sqrt(predictors_df[predictors_df$predictor == "distance_PA", "value"])
+  }
+
+  if ("deforestation_gaveau" %in% unique(predictors_df$predictor)) {
+    predictors_df[predictors_df$predictor == "deforestation_gaveau", "value"] <-
+      sqrt(predictors_df[predictors_df$predictor == "deforestation_gaveau", "value"])
+  }
+
+  for (nm in c("plantation_distance", "pulp_distance", "palm_distance")) {
+    if (nm %in% unique(predictors_df$predictor)) {
+      predictors_df[predictors_df$predictor == nm, "value"] <-
+        log(predictors_df[predictors_df$predictor == nm, "value"] + 1)
+    }
   }
 
   return(predictors_df)

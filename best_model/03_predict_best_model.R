@@ -5,40 +5,20 @@ INPUT_DIR <- "/path/to/your/input"
 MODEL_DIR <- "/path/to/your/output"
 OUTPUT_DIR <- "/path/to/your/output"
 
-FUN_DIR <- file.path(getwd(), "src", "functions")
-source(file.path(FUN_DIR, "project_functions", "scale.predictors.R"))
+script_path <- tryCatch(normalizePath(sys.frame(1)$ofile), error = function(e) NA_character_)
+script_dir <- if (!is.na(script_path) && nzchar(script_path)) dirname(script_path) else getwd()
+repo_dir <- dirname(script_dir)
+
+source(file.path(repo_dir, "predictor_config.R"))
+source(file.path(repo_dir, "helpers", "scale.predictors.R"))
 
 if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
 
 predictors_obs <- read.csv(file.path(MODEL_DIR, "predictors_observation_scaled.csv"), stringsAsFactors = FALSE)
 best_fit <- readRDS(file.path(MODEL_DIR, "best_glm_nb_model.rds"))
 
-predictor_names_for_scaling <- c(
-  "dem",
-  "slope",
-  "temp_mean",
-  "rain_dry",
-  "rain_var",
-  "ou_killings",
-  "ou_killing_prediction",
-  "human_pop_dens",
-  "perc_muslim",
-  "peatswamp",
-  "lowland_forest",
-  "lower_montane_forest",
-  "road_dens",
-  "distance_PA",
-  "fire_dens",
-  "deforestation_hansen",
-  "deforestation_gaveau",
-  "plantation_distance",
-  "pulp_distance",
-  "palm_distance",
-  "dom_T_OC",
-  "dom_T_PH"
-)
-
-predictor_names_add <- c("year", "x_center", "y_center")
+predictor_names_for_scaling <- PREDICTORS_FOR_SCALING
+predictor_names_add <- PREDICTORS_ADD
 
 # Set this to the years you want to predict
 YEARS_TO_PREDICT <- sort(unique(predictors_obs$unscaled_year))
@@ -54,6 +34,7 @@ for (year_to_predict in YEARS_TO_PREDICT) {
   geography$unscaled_y_center <- rowMeans(cbind(geography$y_start, geography$y_end), na.rm = TRUE)
 
   predictors <- dplyr::rename(predictors, unscaled_value = value)
+  predictors <- apply_predictor_transforms(predictors)
 
   predictors_grid <- scale.predictors.grid(
     predictor_names_for_scaling = predictor_names_for_scaling,

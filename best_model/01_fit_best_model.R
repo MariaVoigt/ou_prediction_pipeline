@@ -8,9 +8,13 @@ suppressPackageStartupMessages(library(reshape2))
 INPUT_DIR <- "/path/to/your/input"
 OUTPUT_DIR <- "/path/to/your/output"
 
-FUN_DIR <- file.path(getwd(), "src", "functions")
-source(file.path(FUN_DIR, "project_functions", "scale.predictors.R"))
-source(file.path(FUN_DIR, "roger_functions", "rogers_model_functions.R"))
+script_path <- tryCatch(normalizePath(sys.frame(1)$ofile), error = function(e) NA_character_)
+script_dir <- if (!is.na(script_path) && nzchar(script_path)) dirname(script_path) else getwd()
+repo_dir <- dirname(script_dir)
+
+source(file.path(repo_dir, "predictor_config.R"))
+source(file.path(repo_dir, "helpers", "scale.predictors.R"))
+source(file.path(repo_dir, "helpers", "rogers_model_functions.R"))
 
 ESW <- 0.01595
 NCS <- 1.12
@@ -25,39 +29,10 @@ predictors <- read.csv(file.path(INPUT_DIR, "predictors_observation_20.csv"), st
 geography$unscaled_x_center <- rowMeans(cbind(geography$x_start, geography$x_end), na.rm = TRUE)
 geography$unscaled_y_center <- rowMeans(cbind(geography$y_start, geography$y_end), na.rm = TRUE)
 
-predictors[predictors$predictor == "distance_PA", "value"] <- sqrt(predictors[predictors$predictor == "distance_PA", "value"])
-predictors[predictors$predictor == "human_pop_dens", "value"] <- log(predictors[predictors$predictor == "human_pop_dens", "value"] + 1)
-predictors[predictors$predictor == "deforestation_gaveau", "value"] <- sqrt(predictors[predictors$predictor == "deforestation_gaveau", "value"])
-predictors[predictors$predictor == "plantation_distance", "value"] <- log(predictors[predictors$predictor == "plantation_distance", "value"] + 1)
-predictors[predictors$predictor == "pulp_distance", "value"] <- log(predictors[predictors$predictor == "pulp_distance", "value"] + 1)
-predictors[predictors$predictor == "palm_distance", "value"] <- log(predictors[predictors$predictor == "palm_distance", "value"] + 1)
+predictors <- apply_predictor_transforms(predictors)
 
-predictor_names_for_scaling <- c(
-  "dem",
-  "slope",
-  "temp_mean",
-  "rain_dry",
-  "rain_var",
-  "ou_killings",
-  "ou_killing_prediction",
-  "human_pop_dens",
-  "perc_muslim",
-  "peatswamp",
-  "lowland_forest",
-  "lower_montane_forest",
-  "road_dens",
-  "distance_PA",
-  "fire_dens",
-  "deforestation_hansen",
-  "deforestation_gaveau",
-  "plantation_distance",
-  "pulp_distance",
-  "palm_distance",
-  "dom_T_OC",
-  "dom_T_PH"
-)
-
-predictor_names_add <- c("year", "x_center", "y_center")
+predictor_names_for_scaling <- PREDICTORS_FOR_SCALING
+predictor_names_add <- PREDICTORS_ADD
 
 predictors <- dplyr::select(predictors, id, predictor, unscaled_year = year, unscaled_value = value) %>%
   inner_join(transects, by = "id")
@@ -83,40 +58,12 @@ predictors_obs$ou_dens <- (predictors_obs$nr_nests / (predictors_obs$length_km *
 
 predictors_obs$offset_term <- log(predictors_obs$length_km * ESW * 2 * predictors_obs$nest_decay * NCS * PNB)
 
-m_terms <- c(
-  "1",
-  "year",
-  "temp_mean",
-  "rain_var",
-  "rain_dry",
-  "dom_T_OC",
-  "peatswamp",
-  "lowland_forest",
-  "lower_montane_forest",
-  "deforestation_hansen",
-  "human_pop_dens",
-  "ou_killing_prediction",
-  "perc_muslim",
-  "I(rain_dry^2)"
-)
+m_terms <- get_m_terms()
 
 all_model_terms <- built.all.models(
-  env.cov.names = c(
-    "year",
-    "temp_mean",
-    "rain_var",
-    "rain_dry",
-    "dom_T_OC",
-    "peatswamp",
-    "lowland_forest",
-    "lower_montane_forest",
-    "deforestation_hansen",
-    "human_pop_dens",
-    "ou_killing_prediction",
-    "perc_muslim"
-  ),
-  env.cov.int = list(),
-  env.cov.2 = c("rain_dry")
+  env.cov.names = get_candidate_model_config()$env.cov.names,
+  env.cov.int = get_candidate_model_config()$env.cov.int,
+  env.cov.2 = get_candidate_model_config()$env.cov.2
 )
 
 results <- vector("list", nrow(all_model_terms))
