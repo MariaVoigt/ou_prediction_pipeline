@@ -1,12 +1,17 @@
 suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(tidyr))
-suppressPackageStartupMessages(library(stringr))
-suppressPackageStartupMessages(library(MASS))
-suppressPackageStartupMessages(library(gtools))
+suppressPackageStartupMessages(library(mgcv))
 suppressPackageStartupMessages(library(reshape2))
 
 INPUT_DIR <- "/path/to/your/input"
 OUTPUT_DIR <- "/path/to/your/output"
+
+# Buffer (km) used when preparing predictors; must match prepare step --buffer-km
+BUFFER_KM <- 20
+
+# Right-hand side of the best model formula (edit this!)
+# Environmental (parametric) terms only. The spatial smooth and offset are
+# appended automatically.
+BEST_MODEL_RHS <- "PREDICTOR1 + PREDICTOR2 + ..."
 
 script_path <- tryCatch(normalizePath(sys.frame(1)$ofile), error = function(e) NA_character_)
 script_dir <- if (!is.na(script_path) && nzchar(script_path)) dirname(script_path) else getwd()
@@ -14,7 +19,6 @@ repo_dir <- dirname(script_dir)
 
 source(file.path(repo_dir, "predictor_config.R"))
 source(file.path(repo_dir, "helpers", "scale.predictors.R"))
-source(file.path(repo_dir, "helpers", "rogers_model_functions.R"))
 
 ESW <- 0.01595
 NCS <- 1.12
@@ -24,7 +28,7 @@ if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
 
 geography <- read.csv(file.path(INPUT_DIR, "geography_observation.csv"), stringsAsFactors = FALSE)
 transects <- read.csv(file.path(INPUT_DIR, "transects.csv"), stringsAsFactors = FALSE)
-predictors <- read.csv(file.path(INPUT_DIR, "predictors_observation_20.csv"), stringsAsFactors = FALSE)
+predictors <- read.csv(file.path(INPUT_DIR, paste0("predictors_observation_", BUFFER_KM, ".csv")), stringsAsFactors = FALSE)
 
 geography$unscaled_x_center <- rowMeans(cbind(geography$x_start, geography$x_end), na.rm = TRUE)
 geography$unscaled_y_center <- rowMeans(cbind(geography$y_start, geography$y_end), na.rm = TRUE)
@@ -47,7 +51,7 @@ predictors_obs <- scale.predictors.observation(
 )
 
 predictors_obs <- geography %>%
-  dplyr::select(-c(year, unscaled_x_center, unscaled_y_center)) %>%
+  dplyr::select(-c(unscaled_x_center, unscaled_y_center)) %>%
   inner_join(transects, by = "id") %>%
   inner_join(predictors_obs, by = "id") %>%
   arrange(id) %>%
@@ -58,44 +62,42 @@ predictors_obs$ou_dens <- (predictors_obs$nr_nests / (predictors_obs$length_km *
 
 predictors_obs$offset_term <- log(predictors_obs$length_km * ESW * 2 * predictors_obs$nest_decay * NCS * PNB)
 
-m_terms <- get_m_terms()
+# Coordinates in km for the isotropic spatial smooth (see predictor_config.R)
+predictors_obs$x_km <- predictors_obs$unscaled_x_center / 1000
+predictors_obs$y_km <- predictors_obs$unscaled_y_center / 1000
 
-all_model_terms <- built.all.models(
-  env.cov.names = get_candidate_model_config()$env.cov.names,
-  env.cov.int = get_candidate_model_config()$env.cov.int,
-  env.cov.2 = get_candidate_model_config()$env.cov.2
-)
-
-results <- vector("list", nrow(all_model_terms))
-
-for (i in seq_len(nrow(all_model_terms))) {
-  rhs <- paste(m_terms[all_model_terms[i, ] == 1], collapse = "+")
-  fml <- as.formula(paste0("nr_nests ~ ", rhs, " + offset(offset_term)"))
-  fit <- glm.nb(fml, data = predictors_obs, control = glm.control(maxit = 250))
-  results[[i]] <- list(
-    model_rhs = rhs,
-    aic = extractAIC(fit)[2],
-    fit = fit
-  )
-}
-
-aics <- vapply(results, function(x) x$aic, numeric(1))
-best_i <- which.min(aics)
-best_fit <- results[[best_i]]$fit
-best_rhs <- results[[best_i]]$model_rhs
+best_rhs <- BEST_MODEL_RHS
+fml <- as.formula(paste0("nr_nests ~ ", best_rhs, " + ", SPATIAL_SMOOTH_TERM, " + offset(offset_term)"))
+best_fit <- gam(fml, data = predictors_obs, family = nb(), method = "REML")
 
 write.csv(predictors_obs, file = file.path(OUTPUT_DIR, "predictors_observation_scaled.csv"), row.names = FALSE)
 
 best_rhs_tbl <- data.frame(best_model_rhs = best_rhs)
 write.csv(best_rhs_tbl, file = file.path(OUTPUT_DIR, "best_model_rhs.csv"), row.names = FALSE)
 
-best_coef_tbl <- data.frame(term = names(coef(best_fit)), estimate = as.numeric(coef(best_fit)))
-write.csv(best_coef_tbl, file = file.path(OUTPUT_DIR, "best_model_coefficients.csv"), row.names = FALSE)
+smry <- summary(best_fit)
 
-saveRDS(best_fit, file = file.path(OUTPUT_DIR, "best_glm_nb_model.rds"))
+# Parametric (environmental) coefficients -- these are the interpretable terms.
+# NOTE: estimates are conditional on the spatial smooth; spatially structured
+# predictors can be partly absorbed by s(x_km, y_km) (spatial confounding).
+p_tbl <- as.data.frame(smry$p.table)
+names(p_tbl) <- c("estimate", "std_error", "statistic", "p_value")
+p_tbl$term <- rownames(p_tbl)
+p_tbl <- p_tbl[, c("term", "estimate", "std_error", "statistic", "p_value")]
+write.csv(p_tbl, file = file.path(OUTPUT_DIR, "best_model_coefficients.csv"), row.names = FALSE)
+
+# Smooth-term summary (EDF / significance of the spatial surface)
+s_tbl <- as.data.frame(smry$s.table)
+names(s_tbl) <- c("edf", "ref_df", "statistic", "p_value")
+s_tbl$smooth <- rownames(s_tbl)
+s_tbl <- s_tbl[, c("smooth", "edf", "ref_df", "statistic", "p_value")]
+write.csv(s_tbl, file = file.path(OUTPUT_DIR, "best_model_smooth_terms.csv"), row.names = FALSE)
+
+saveRDS(best_fit, file = file.path(OUTPUT_DIR, "best_gam_nb_model.rds"))
 
 best_summary <- data.frame(
   model_rhs = best_rhs,
-  AIC = extractAIC(best_fit)[2]
+  AIC = AIC(best_fit),
+  deviance_explained = smry$dev.expl
 )
 write.csv(best_summary, file = file.path(OUTPUT_DIR, "best_model_summary.csv"), row.names = FALSE)

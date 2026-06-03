@@ -3,13 +3,35 @@
 This repository contains a lightweight workflow to:
 
 - Prepare predictor tables from **already-aligned rasters** (alignment/clipping can be done in ArcGIS/QGIS).
-- Fit a negative binomial abundance model on transect observations.
-- Predict abundance on a raster-derived grid for one or more years.
+- Fit a **negative-binomial GAM** abundance model with a **2D spatial smooth** on transect observations.
+- Predict (spatially interpolate) abundance on a raster-derived grid for one or more years.
 
-The pipeline currently works with the best model only, but we can expand to full model comparison.
+The pipeline works with the best model only, but we can expand to full model comparison.
 The logic is: 
 
-- **Rasters (aligned) → extracted predictors in a buffer → long tables → scaled wide tables → model → predictions**
+- **Rasters (aligned) → extracted predictors in a buffer → long tables → scaled wide tables → NB GAM (env terms + `s(x, y)`) → predictions**
+
+### Model form
+
+The model is a negative-binomial GAM:
+
+```
+nr_nests ~ <environmental predictors> + s(x_km, y_km) + offset(offset_term)
+```
+
+- Environmental predictors enter as **parametric (linear) terms** — these are the interpretable coefficients.
+- `s(x_km, y_km)` is an isotropic thin-plate spline over geographic coordinates (in km): this is the **spatial-interpolation** component.
+
+> ## ⚠️ Key trade-off: spatial confounding
+>
+> The spatial smooth `s(x_km, y_km)` and any **spatially structured environmental predictor** compete for the same variance. Because almost every environmental layer (deforestation, distances, human population, etc.) is spatially patterned, the smooth will **absorb part of their signal**.
+>
+> Consequences you must report:
+> - Environmental coefficients are typically **smaller** (shrunk toward zero) and have **wider standard errors** than in a non-spatial model.
+> - The same predictor can look important without the smooth and unimportant with it — neither is "wrong"; they answer different questions.
+> - The smooth itself is **not** a single coefficient: interpret it via its EDF and a plot of the fitted surface, not a number in the coefficients table.
+>
+> **Bottom line:** the GAM is excellent for *spatial prediction/interpolation*, but environmental coefficients must be interpreted *conditional on the spatial smooth*. If clean coefficient inference is the primary goal, a spatial GLMM (Matérn random field) would be the more appropriate tool.
 
 ---
 
@@ -20,6 +42,7 @@ The logic is:
     - which predictors are used everywhere (`MODEL_PREDICTORS`)
     - transforms applied before scaling (`apply_predictor_transforms()`)
     - candidate model term universe (`get_m_terms()`, `get_candidate_model_config()`)
+    - the spatial smooth term (`SPATIAL_SMOOTH_TERM`, `SPATIAL_COORDS`)
 
 - `prepare_predictors_from_aligned_rasters.R`
   - Main *data preparation* entrypoint.
@@ -29,12 +52,16 @@ The logic is:
 
 - `helpers/scale.predictors.R`
   - Functions to scale predictors and cast long→wide for modelling/prediction.
+- `helpers/rogers_model_functions.R`
+  - `built.all.models()`: enumerates the all-subsets candidate model matrix (used by `00`).
 
 - `best_model/`
-  - `01_fit_best_model.R`: fit best NB model on transect observations
-  - `02_cross_validation_leave_one_year_out.R`: leave-one-year-out CV on fitted RHS
-  - `03_predict_best_model.R`: predict on grid for multiple years
-  - `04_bootstrap_best_model.R`: coefficient uncertainty via parametric bootstrap
+  - `00_select_best_model.R`: **(one-off)** all-subsets search (each candidate = env subset **+ fixed `s(x_km, y_km)`**) by AIC; prints best RHS and writes `all_models_aic.csv` + `best_model_rhs.csv`
+  - `01_fit_best_model.R`: fit the pre-specified best NB GAM (set `BEST_MODEL_RHS` at the top); writes `best_gam_nb_model.rds`, parametric `best_model_coefficients.csv`, and `best_model_smooth_terms.csv`
+  - `02_cross_validation_leave_one_year_out.R`: leave-one-year-out CV — **not suitable for the spatial use case** (see caveat in the file); for temporal diagnostics only
+  - `02b_spatial_cross_validation.R`: **spatial block CV** — groups transects into spatial blocks/folds and measures interpolation skill (R², RMSE, Spearman). Use this to validate spatial prediction.
+  - `03_predict_best_model.R`: spatially interpolate on grid for multiple years, with a configurable prediction footprint
+  - `04_bootstrap_best_model.R`: coefficient uncertainty via GAM posterior simulation (parametric terms)
 
 ---
 
@@ -141,6 +168,11 @@ Edit `predictor_config.R`:
 
 If you add/remove predictors, update `MODEL_PREDICTORS` and (optionally) update transforms.
 
+> **Tip — keep `MODEL_PREDICTORS` small before running model selection.**
+> All-subsets search in `00_select_best_model.R` fits **2^N candidate models**, where N is the number of predictors.
+> With 16 predictors that is ~65,000 models; with 10 it is ~1,000.
+> Start with a biologically motivated shortlist, run selection, then expand only if needed.
+
 ---
 
 ### Step 2 — Build grid and extract predictors (transects + grid)
@@ -184,19 +216,34 @@ And for each year `Y` in `--years`:
 
 ---
 
-### Step 3 — Fit the model
+### Step 3a — Select the best model (one-off)
+
+If you do not yet know your best model formula, run `best_model/00_select_best_model.R`:
+
+- Set `INPUT_DIR` and `OUTPUT_DIR` at the top.
+- The script fits all candidate NB **GAMs** (all-subsets over `MODEL_PREDICTORS`, each with the **fixed spatial smooth `s(x_km, y_km)`**) and selects the lowest-AIC one.
+- Only the **environmental** terms are searched; the spatial smooth is always present.
+- The best RHS (environmental terms only) is printed to the console and written to `best_model_rhs.csv`.
+- A full AIC table is written to `all_models_aic.csv`.
+
+**This step is slow** (up to 2^16 candidate GAM fits). Run it once, then record the result.
+
+### Step 3b — Fit the best model
 
 Edit `best_model/01_fit_best_model.R`:
 
 - Set:
   - `INPUT_DIR` to the folder created in Step 2
   - `OUTPUT_DIR` to a model output folder
+  - `BEST_MODEL_RHS` to the **environmental** formula RHS from Step 3a (or from prior knowledge). The spatial smooth and offset are appended automatically — do **not** include them here.
 
 Then run the script. It will write (among others):
 
-- `best_glm_nb_model.rds`
+- `best_gam_nb_model.rds` (the fitted NB GAM)
 - `predictors_observation_scaled.csv`
 - `best_model_rhs.csv`
+- `best_model_coefficients.csv` (parametric/environmental terms with SEs)
+- `best_model_smooth_terms.csv` (EDF/significance of the spatial smooth)
 
 ---
 
@@ -213,10 +260,36 @@ Optionally edit:
 
 - `YEARS_TO_PREDICT`
 
+#### Prediction footprint (extrapolation handling)
+
+Because the spatial smooth extrapolates poorly outside the survey area, you choose a **footprint** that defines where predictions are trustworthy:
+
+- **`FOOTPRINT_MODE`**
+  - `"none"` — predict everywhere
+  - `"buffer"` — keep cells within `FOOTPRINT_BUFFER_KM` of any transect center
+  - `"convex_hull"` — convex hull of transects, optionally expanded by `FOOTPRINT_BUFFER_KM`
+  - `"shapefile"` — a polygon you provide via `FOOTPRINT_SHP` (must be in the **same planar CRS** as the coordinates)
+- **`FOOTPRINT_ACTION`**
+  - `"flag"` — keep all cells but add an `in_footprint` column to the output
+  - `"clip"` — drop out-of-footprint cells entirely
+
 Then run. It writes per year:
 
 - `predictors_grid_scaled_<year>.csv`
-- `abundance_pred_per_cell_<year>.csv`
+- `abundance_pred_per_cell_<year>.csv` — columns: `density_ou_per_km2`, `cell_area_km2`, `abundance_pred` (absolute orangutans in the cell), `in_footprint`
+- `abundance_total_<year>.csv` — landscape population total summed over in-footprint cells
+
+**Units:** with `offset = 0` the model predicts orangutan **density** (individuals/km²). The script multiplies by each cell's area (from the cell bounds, assuming coordinates in meters) to get **absolute abundance per cell**, which sums to the landscape total.
+
+### Step 5 — Validate spatially
+
+Run `best_model/02b_spatial_cross_validation.R` to assess interpolation skill:
+
+- Set `MODEL_DIR` / `OUTPUT_DIR`, and optionally `BLOCK_SIZE_KM` and `N_FOLDS`.
+- Transects are grouped into spatial blocks, blocks assigned to folds; each fold is held out and predicted.
+- Writes `cv_spatial_blocks.csv` (per-fold R², RMSE, Spearman) and `cv_spatial_summary.csv`.
+
+> Prefer this over `02_cross_validation_leave_one_year_out.R` for the spatial use case. Year-based CV is only a temporal diagnostic and is degenerate when you have few survey years.
 
 ---
 
@@ -289,7 +362,17 @@ Edit only:
 
 This keeps transformations consistent between training and prediction.
 
-### 4) `nest_decay`
+### 4) `BEST_MODEL_RHS`
+
+Set this in `best_model/01_fit_best_model.R` to the **environmental** terms of your chosen model, e.g.:
+
+```r
+BEST_MODEL_RHS <- "dem + slope + lowland_forest + human_pop_dens + distance_PA"
+```
+
+Do not include `offset(offset_term)` **or** the spatial smooth `s(x_km, y_km)` here — both are appended automatically (the smooth is configured via `SPATIAL_SMOOTH_TERM` in `predictor_config.R`).
+
+### 5) `nest_decay`
 
 You can:
 
@@ -302,4 +385,8 @@ You can:
 
 - All coordinates are assumed to already be in a planar CRS (e.g. AEA meters) consistent with the aligned rasters.
 - Grid ids are generated as `grid_1`, `grid_2`, ... and remain consistent across years.
-- The pipeline currently models `nr_nests` with a NB GLM; if you change response definitions you’ll need to update `best_model/01_fit_best_model.R`.
+- The pipeline models `nr_nests` with a **negative-binomial GAM** (`mgcv::gam`, `family = nb()`) including an isotropic spatial smooth `s(x_km, y_km)`; if you change response definitions you’ll need to update `best_model/01_fit_best_model.R`.
+- The spatial smooth uses coordinates in **km** (built from the unscaled cell/transect centers) so x and y share a common isotropic scale. Predictions for grid cells far outside the transect footprint are **extrapolations** and unreliable — use the prediction footprint (Step 4) to flag/clip them.
+- **Validate spatially**, not temporally: use `02b_spatial_cross_validation.R` (spatial block CV). The leave-one-year-out script is for temporal diagnostics only.
+- Required packages: `mgcv` (model), and `sp` + `rgeos` + `rgdal` (prediction footprint, same stack as the prepare script).
+- Per-cell output is **absolute abundance**: the density prediction (individuals/km², from `offset = 0`) is multiplied by each cell's area (km², derived from the cell bounds). Cells sum to a landscape total (`abundance_total_<year>.csv`). This assumes coordinates are in **meters**.

@@ -1,92 +1,54 @@
 suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(mgcv))
 
 MODEL_DIR <- "/path/to/your/output"
 OUTPUT_DIR <- "/path/to/your/output"
 
-N_BOOT <- 200
+N_BOOT <- 1000
 SET_SEED <- 1
 
 if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
 set.seed(SET_SEED)
 
-predictors_obs <- read.csv(file.path(MODEL_DIR, "predictors_observation_scaled.csv"), stringsAsFactors = FALSE)
-best_rhs_tbl <- read.csv(file.path(MODEL_DIR, "best_model_rhs.csv"), stringsAsFactors = FALSE)
-best_rhs <- best_rhs_tbl$best_model_rhs[1]
+best_fit <- readRDS(file.path(MODEL_DIR, "best_gam_nb_model.rds"))
 
-fml <- as.formula(paste0("nr_nests ~ ", best_rhs, " + offset(offset_term)"))
-
-best_fit <- readRDS(file.path(MODEL_DIR, "best_glm_nb_model.rds"))
-
-# Design matrix used for simulation
-X <- model.matrix(fml, data = predictors_obs)
+# Coefficient uncertainty for a GAM via posterior (Bayesian) simulation:
+# draw coefficients from N(beta_hat, Vp). This covers the parametric
+# (environmental) terms AND the spatial-smooth basis coefficients.
 beta_hat <- coef(best_fit)
-V <- vcov(best_fit)
+Vp <- vcov(best_fit)
 
-# Theta uncertainty (may be NA if not available)
-theta_hat <- best_fit$theta
-se_theta <- tryCatch(summary(best_fit)$SE.theta, error = function(e) NA_real_)
+beta_draws <- mgcv::rmvn(N_BOOT, beta_hat, Vp)
+colnames(beta_draws) <- names(beta_hat)
 
-boot_coefs <- matrix(NA_real_, nrow = N_BOOT, ncol = length(beta_hat))
-colnames(boot_coefs) <- names(beta_hat)
+# Report only the parametric (interpretable) terms; smooth-basis coefficients
+# are not individually meaningful.
+param_terms <- rownames(summary(best_fit)$p.table)
 
-boot_theta <- rep(NA_real_, N_BOOT)
+beta_draws_param <- as.data.frame(beta_draws[, param_terms, drop = FALSE])
 
-attempts <- 0
-kept <- 0
+write.csv(beta_draws_param,
+          file = file.path(OUTPUT_DIR, "best_model_posterior_coefficients.csv"),
+          row.names = FALSE)
 
-while (kept < N_BOOT) {
-  attempts <- attempts + 1
-
-  beta_draw <- MASS::mvrnorm(n = 1, mu = beta_hat, Sigma = V)
-  names(beta_draw) <- names(beta_hat)
-
-  theta_draw <- theta_hat
-  if (!is.na(se_theta)) {
-    theta_draw <- rnorm(1, mean = theta_hat, sd = se_theta)
-  }
-  if (!is.finite(theta_draw) || theta_draw <= 0) next
-
-  eta <- as.numeric(X %*% beta_draw) + predictors_obs$offset_term
-  mu <- exp(eta)
-
-  y_sim <- rnbinom(n = nrow(predictors_obs), mu = mu, size = theta_draw)
-
-  sim_data <- predictors_obs
-  sim_data$nr_nests <- y_sim
-
-  fit_sim <- try(glm.nb(fml, data = sim_data, control = glm.control(maxit = 500)), silent = TRUE)
-  if (inherits(fit_sim, "try-error")) next
-
-  kept <- kept + 1
-  boot_coefs[kept, ] <- coef(fit_sim)
-  boot_theta[kept] <- fit_sim$theta
-}
-
-boot_coefs <- as.data.frame(boot_coefs)
-
-write.csv(boot_coefs, file = file.path(OUTPUT_DIR, "best_model_bootstrap_coefficients.csv"), row.names = FALSE)
-
-coef_summary <- lapply(names(beta_hat), function(nm) {
-  vals <- boot_coefs[[nm]]
+coef_summary <- lapply(param_terms, function(nm) {
+  vals <- beta_draws_param[[nm]]
   data.frame(
-    term = nm,
+    term     = nm,
     estimate = beta_hat[[nm]],
-    q025 = as.numeric(quantile(vals, probs = 0.025, na.rm = TRUE)),
-    q500 = as.numeric(quantile(vals, probs = 0.5, na.rm = TRUE)),
-    q975 = as.numeric(quantile(vals, probs = 0.975, na.rm = TRUE))
+    q025     = as.numeric(quantile(vals, probs = 0.025, na.rm = TRUE)),
+    q500     = as.numeric(quantile(vals, probs = 0.5,   na.rm = TRUE)),
+    q975     = as.numeric(quantile(vals, probs = 0.975, na.rm = TRUE))
   )
 }) %>% bind_rows()
 
-write.csv(coef_summary, file = file.path(OUTPUT_DIR, "best_model_bootstrap_coef_summary.csv"), row.names = FALSE)
+write.csv(coef_summary,
+          file = file.path(OUTPUT_DIR, "best_model_posterior_coef_summary.csv"),
+          row.names = FALSE)
 
-theta_summary <- data.frame(
-  theta_hat = theta_hat,
-  theta_q025 = as.numeric(quantile(boot_theta, probs = 0.025, na.rm = TRUE)),
-  theta_q500 = as.numeric(quantile(boot_theta, probs = 0.5, na.rm = TRUE)),
-  theta_q975 = as.numeric(quantile(boot_theta, probs = 0.975, na.rm = TRUE)),
-  n_boot = N_BOOT,
-  attempts = attempts
-)
-
-write.csv(theta_summary, file = file.path(OUTPUT_DIR, "best_model_bootstrap_theta_summary.csv"), row.names = FALSE)
+# Negative-binomial theta (dispersion) point estimate from the fitted GAM.
+theta_hat <- best_fit$family$getTheta(TRUE)
+theta_summary <- data.frame(theta_hat = theta_hat, n_boot = N_BOOT)
+write.csv(theta_summary,
+          file = file.path(OUTPUT_DIR, "best_model_theta_summary.csv"),
+          row.names = FALSE)
