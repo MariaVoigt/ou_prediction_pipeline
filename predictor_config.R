@@ -30,6 +30,15 @@ PREDICTORS_FOR_SCALING <- setdiff(MODEL_PREDICTORS, c("year", "x_center", "y_cen
 # Additional predictors computed from geography and scaled
 PREDICTORS_ADD <- c("year", "x_center", "y_center")
 
+# --- Spatial model (GAM 2D smooth) ---
+# The pipeline fits a negative-binomial GAM with an isotropic thin-plate
+# spline over geographic coordinates: this is the spatial-interpolation term.
+# Coordinates are used in KILOMETERS (built in the scripts from the unscaled
+# center coordinates) so that x and y share a common, isotropic scale.
+# NOTE: do NOT z-score x/y separately for the smooth -- that distorts distances.
+SPATIAL_COORDS <- c("x_km", "y_km")
+SPATIAL_SMOOTH_TERM <- 's(x_km, y_km, bs = "tp")'
+
 # Transformation rules applied before scaling.
 # Implemented as a function to keep behavior explicit.
 apply_predictor_transforms <- function(predictors_df) {

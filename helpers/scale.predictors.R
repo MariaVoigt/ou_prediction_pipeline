@@ -14,8 +14,6 @@ scale.predictors.observation <- function(predictor_names_for_scaling,
                                             "unscaled_value"])))
   }
 
-  geography <- dplyr::select(geography, -c(year))
-
   # Rename here
   predictors_obs <- predictors %>%
     dplyr::filter(predictor %in% predictor_names_for_scaling) %>%
@@ -50,15 +48,13 @@ scale.predictors.observation <- function(predictor_names_for_scaling,
   }
 
 
-  predictors_obs <- dplyr::select_(predictors_obs,
-                                   .dots = c("id",
-                                             predictor_names_for_scaling,
-                                             predictor_names_add,
-                                             paste0("unscaled_",
-                                                    predictor_names_for_scaling),
-                                             paste0("unscaled_",
-                                                    predictor_names_add))) %>%
-    as.data.frame(.)
+  predictors_obs <- predictors_obs %>%
+    dplyr::select(dplyr::all_of(c("id",
+                                  predictor_names_for_scaling,
+                                  predictor_names_add,
+                                  paste0("unscaled_", predictor_names_for_scaling),
+                                  paste0("unscaled_", predictor_names_add)))) %>%
+    as.data.frame()
   return(predictors_obs)
 }
 
@@ -117,15 +113,13 @@ scale.predictors.grid <- function(predictor_names_for_scaling,
                                            sd_predictor_obs
   }
 
- predictors_grid <- dplyr::select_(predictors_grid,
-                                  .dots = c("id",
-                                            predictor_names_for_scaling,
-                                            predictor_names_add,
-                                            paste0("unscaled_",
-                                                   predictor_names_for_scaling),
-                                            paste0("unscaled_",
-                                                   predictor_names_add))) %>%
-   as.data.frame(.)
+ predictors_grid <- predictors_grid %>%
+   dplyr::select(dplyr::all_of(c("id",
+                                 predictor_names_for_scaling,
+                                 predictor_names_add,
+                                 paste0("unscaled_", predictor_names_for_scaling),
+                                 paste0("unscaled_", predictor_names_add)))) %>%
+   as.data.frame()
 
   return(predictors_grid)
 }
