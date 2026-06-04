@@ -4,24 +4,14 @@
 MODEL_PREDICTORS <- c(
   "dem",
   "slope",
-  "temp_mean",
-  "rain_dry",
-  "rain_var",
-  "human_pop_dens",
-  "lowland_forest",
-  "lower_montane_forest",
-  "road_dens",
-  "distance_PA",
-  "fire_dens",
-  "deforestation_hansen",
-  "deforestation_gaveau",
-  "plantation_distance",
-  "pulp_distance",
-  "palm_distance"
+  "road_distance",
+  "proportion_degraded_forest_1yrs"
+  "years_since_newest_change" # 10 years - value ten, last year it would be 1, two years ago 2
 )
 
-# Derived terms (still based only on predictors above)
-INCLUDE_RAIN_DRY_QUADRATIC <- TRUE
+
+
+# newly degraded forest int he last two years (to do- create layer)
 
 # Predictors that are scaled from the long predictor table
 # (exclude year/x/y since those come from geography)

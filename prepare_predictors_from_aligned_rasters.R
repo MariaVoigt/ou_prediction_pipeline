@@ -13,16 +13,28 @@ suppressPackageStartupMessages(library(rgdal))
 # If you run it via `Rscript prepare_predictors_from_aligned_rasters.R --help`, the CLI
 # arguments are used instead.
 
+# to do!!
+# prepare input predictor layers
+# extract newly degraded forest in 2 years prior from TMF JRC (annual change collection)
+# sum the one years before, but implement cutoff in October, so everything before would pick the year before, 
+# everyting in Oct-Dec would pick that year 
+
+
+
 RASTER_DIR <- "/path/to/aligned_rasters"
 REFERENCE_RASTER <- "/path/to/reference.tif"
 TRANSECTS_CSV <- "/path/to/transects.csv"
+# how do we summarize the transect information with the 100 m grid 
+
+
 OUT_DIR <- "/path/to/pipeline_inputs"
 
 # Comma-separated years, e.g. "1999,2000,2015"
-YEARS <- "1999,2000,2001,2015"
+# to do: research how to implement the years
+YEARS <- "2017, 2018, 2022, 2023, 2024, 2025" # baseline in 2017-2018 (month information is included in the data)
 
 # Buffer around transects for extraction (km)
-BUFFER_KM <- 20
+BUFFER_KM <- 3
 
 # Optional: shapefile polygon used to restrict the grid (leave as "" to disable)
 MASK_SHP <- ""

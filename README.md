@@ -81,7 +81,8 @@ Example row:
 | id | year | predictor | value |
 |---|---:|---|---:|
 | ground_12 | 2010 | temp_mean | 26.3 |
-
+| ground_12 | 2010 | slope | xx |
+| ground_12 | 2016 | temp_mean | 26.3 |
 ### 2) Geography table
 
 The pipeline uses **geography tables** to store the geometry (coordinates) of the objects you extract/predict on.
@@ -113,8 +114,14 @@ The abundance model uses (at minimum):
 - `year`
 - `length_km`
 - `nr_nests`
+- gps location of nest
+- perpendicular distance to nest
+- think about how to code 0 nest transects (to do!)
+
+- think how we aggregate, whether we deal with individual nests as a response or transects segment
 
 `nest_decay` can be provided as a column or set/hard-coded inside modelling scripts.
+- 602 days
 
 ---
 
@@ -153,6 +160,10 @@ Edit `predictor_config.R`:
   - These names must match raster filenames (see naming convention) and will become column names later.
 
 - **`apply_predictor_transforms()`**
+
+- add script for predictor interrogation for distribution and correlation analysis
+
+
   - Transform rules applied to the *long predictor table* before scaling.
   - Typical transform choices (examples):
     - `log(x + 1)` for strictly-positive, right-skewed predictors (e.g. `human_pop_dens`, distance-to-feature layers)
