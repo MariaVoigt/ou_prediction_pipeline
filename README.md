@@ -11,6 +11,23 @@ The logic is:
 
 - **Rasters (aligned) → extracted predictors in a buffer → long tables → scaled wide tables → NB GAM (env terms + `s(x, y)`) → predictions**
 
+---
+
+## Two analysis tracks
+
+The pipeline supports **two distinct questions** that must not share a model. See [`README_two_tracks.md`](README_two_tracks.md) for full design rationale.
+
+| | **Track A — spatial interpolation** | **Track B — degradation / re-occupation** |
+|---|---|---|
+| Question | What is orangutan abundance across the landscape in a given year? | Does logging drive a temporary abundance change, and do orangutans return? |
+| Unit | grid cell | transect **segment** × year |
+| Model | NB GAM with `s(x_km, y_km)` spatial smooth | NB GAM, recovery smooth `s(years_since_last_logging, by = ever_logged)`, transect + year random effects |
+| Role of `s(x,y)` | **central** — interpolates across unsurveyed space | **absent** (or nuisance mop-up if residuals cluster spatially) |
+| Output | wall-to-wall density surface | degradation contrast + recovery trajectory in occupied habitat |
+| Scripts | `prepare_predictors_*`, `best_model/` | `prepare_segments_track_b.R`, `fit_track_b.R` |
+
+> **Why they must stay separate:** Track A's `s(x_km, y_km)` smooth would absorb the spatially structured logging signal that Track B is designed to measure. Track B's transect random effect and recovery smooth answer a change-over-time question that Track A's per-year surface cannot.
+
 ### Model form
 
 The model is a negative-binomial GAM:
@@ -45,10 +62,19 @@ nr_nests ~ <environmental predictors> + s(x_km, y_km) + offset(offset_term)
     - the spatial smooth term (`SPATIAL_SMOOTH_TERM`, `SPATIAL_COORDS`)
 
 - `prepare_predictors_from_aligned_rasters.R`
-  - Main *data preparation* entrypoint.
+  - Main *data preparation* entrypoint for **Track A**.
   - Builds the prediction grid from a reference raster and extracts predictors for:
     - transects (buffered extraction)
     - grid cells (cell-level extraction)
+
+- `prepare_segments_track_b.R`
+  - **Track B** data preparation.
+  - Splits each transect into fixed-length segments (≈250 m), assigns nest GPS points to segments, extracts per-segment buffered covariates including degradation timing from a `year_last_logged` raster, and builds the offset term.
+  - Output: `segment_year_table.csv` — one row per segment × year, ready for `fit_track_b.R`.
+
+- `fit_track_b.R`
+  - **Track B** model fitting + diagnostics.
+  - Fits the NB GAM with the by-factor recovery smooth, runs `gam.check`, tests residual spatial autocorrelation (Moran's I), and performs two sensitivity checks (regression-to-the-mean; `distance_road` as mediator vs. confounder).
 
 - `helpers/scale.predictors.R`
   - Functions to scale predictors and cast long→wide for modelling/prediction.
@@ -389,6 +415,64 @@ You can:
 
 - include a `nest_decay` column in `transects.csv`, **or**
 - hard-code it inside `best_model/01_fit_best_model.R` before computing `offset_term`.
+
+---
+
+## Track B workflow
+
+### Step B1 — Prepare segment-year table
+
+Open `prepare_segments_track_b.R` and edit the **USER SETTINGS (EDIT!)** block:
+
+- `transects_shp` — LINESTRING shapefile, one row per transect × year, must carry a transect id column and a year column.
+- `nests_shp` — POINT shapefile, one row per nest, must carry a year column and a transect id column.
+- `raster_dir` — same aligned rasters as Track A.
+- `logging_year_rast` — raster where each pixel value is the most recent year that pixel was logged (`NA` = never logged).
+- `out_dir` — output folder.
+- `env_covariates` — named vector of covariate rasters to extract (e.g. `c("dem", "slope", "distance_road")`). For each name `p` the script tries `p_<year>.tif` first then falls back to `p.tif`.
+- `segment_length_m` — recommended 200–250 m.
+- `buffer_m` — **keep ≤ `segment_length_m`**; a wider buffer causes adjacent segment buffers to overlap, manufacturing spatial autocorrelation and eroding the within-transect contrast.
+- `nest_decay_days` — mean nest decay time in days. **Scrutinise this parameter first** — if decay differs between degraded and intact forest, a constant decay term in the offset can manufacture the very trend Track B tests for.
+
+Then **Source** the script (or run via `Rscript prepare_segments_track_b.R --help` for CLI options).
+
+#### What this produces
+
+In `out_dir`:
+
+- `segment_year_table.csv` — one row per segment × year with columns: `seg_id`, `transect_id`, `year`, `seg_index`, `length_km`, `nr_nests`, `prop_degraded_1yr_prior`, `years_since_last_logging`, `ever_logged`, environmental covariates, `offset_term`, `x_km`, `y_km`, `baseline_nests_c`.
+- `segments_geometry.gpkg` — segment linestrings for mapping/QC.
+
+Diagnostics printed to console: zero-nest fraction, buffer/segment ratio warning, logged vs. never-logged counts.
+
+### Step B2 — Fit the recovery model
+
+Edit `fit_track_b.R`:
+
+- `INPUT_CSV` — path to `segment_year_table.csv` from Step B1.
+- `OUTPUT_DIR` — model output folder.
+- `RECOVERY_K` — basis dimension for the recovery smooth (default 4; raise only if `gam.check` flags `k` too low).
+- `USE_DISTANCE_ROAD` — include `distance_road` as a covariate (default `TRUE`; sensitivity check refits without it).
+
+The script auto-detects whether there are enough logged segment-years for a spline (≥ 30) or falls back to a quadratic recovery term.
+
+#### What this produces
+
+In `OUTPUT_DIR`:
+
+- `track_b_gam.rds` — fitted NB GAM.
+- `model_summary.txt`, `parametric_coefficients.csv`, `smooth_terms.csv`.
+- `recovery_curve.png` — **headline plot**: deviation from never-logged baseline vs. years since last logging. A dip-then-return pattern = re-occupation signal.
+- `gam_check.png` / `gam_check.txt` — residual diagnostics.
+- `residuals_in_space.png` + `spatial_autocorr.txt` — Moran's I on between-transect deviance residuals. If strongly positive, refit adding `s(x_km, y_km)` as a nuisance term.
+- `sensitivity_baseline.csv` — key terms with vs. without `baseline_nests_c`.
+- `sensitivity_road.csv` — key terms with vs. without `distance_road`.
+
+### Track B interpretation reminders
+
+- **Defensible result**: the degradation/recovery *contrast* within the revisited set (revisit selection was independent of disturbance).
+- **Caveat — absolute trajectory**: transects were selected on high baseline occupancy, so regression to the mean can mimic a real decline. The `baseline_nests_c` sensitivity check quantifies this; report the with-baseline version.
+- **Caveat — recolonisation**: transects empty at baseline were dropped. Recovery is censored at the baseline-occupied level — we can see a segment dip and return toward its own baseline, but not orangutans appearing in previously empty forest.
 
 ---
 
